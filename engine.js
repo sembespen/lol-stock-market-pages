@@ -105,11 +105,11 @@ export function decide(s       , a       , priority        )          {
 }
 // Validation reserves original gold and copies before any settlement. One bid/ask per owner.
 export function validateOrders(s       , proposed         ) {
- const c=s.manifest.config;const accepted         =[];const seen=new Set        ();const cash=new Map(s.agents.map(a=>[a.id,a.cash]));const copies=new Map               ();
+ const c=s.manifest.config;const accepted         =[];const seen=new Set        ();const cash=new Map(s.agents.map(a=>[a.id,a.cash]));const copies=new Map               ();const bought=new Map               ();
  for(const a of s.agents)for(const i of c.items)copies.set(`${a.id}:${i.id}`,a.inventory[i.id].length);
  for(const i of c.items)copies.set(`shop:${i.id}`,s.markets[i.id].stock);
  for(const o of proposed){const i=c.items.find(i=>i.id===o.item),a=s.agents.find(a=>a.id===o.owner);let error='';
-  const key=o.owner==='shop'?`shop:${o.item}:${o.side}`:`${o.owner}:${o.side}`;
+  const key=o.owner==='shop'||c.bazaar?`${o.owner}:${o.item}:${o.side}`:`${o.owner}:${o.side}`;
   if(!i||(!a&&o.owner!=='shop')||!['bid','ask'].includes(o.side)||!Number.isSafeInteger(o.price)||o.price<1||o.price>c.priceCap*(i?.reference??0)||!Number.isFinite(o.priority))error='Invalid owner, item, side or price';
   else if(seen.has(key))error='At most one order per side';
   else if(o.side==='bid'){
@@ -117,12 +117,12 @@ export function validateOrders(s       , proposed         ) {
    else if(o.price+fee(o.price,s.buyerFeeBps)>(cash.get(a.id)??0))error='Insufficient reserved gold including buyer fee';
    else if(isFighter(a)&&(a.equipped.length>=c.slots||a.equipped.includes(o.item)))error='No available gear slot';
    else if(isFighter(a)&&c.league&&(!activeFighter(s,a)||i.boots&&a.equipped.some(id=>c.items.find(x=>x.id===id) .boots)))error='Inactive champion or boots already equipped';
-   else if(!isFighter(a)&&(holdings(a)>=c.inventoryCap||a.inventory[o.item].length>=c.perItemCap))error='Inventory cap (without assuming a sale)';
+   else if(!isFighter(a)&&(holdings(a)+(bought.get(a.id)??0)>=c.inventoryCap||a.inventory[o.item].length+(bought.get(`${a.id}:${o.item}`)??0)>=c.perItemCap))error='Inventory cap (without assuming a sale)';
   }else if(a&&isFighter(a))error='Equipped goods cannot be sold';
   else if((copies.get(`${o.owner}:${o.item}`)??0)<1)error='No owned transferable copy';
   if(error){event(s,'order-rejected',{order:o,reason:error});continue;}
   seen.add(key);if(o.side==='bid')cash.set(o.owner,cash.get(o.owner) -o.price-fee(o.price,s.buyerFeeBps));else copies.set(`${o.owner}:${o.item}`,copies.get(`${o.owner}:${o.item}`) -1);
-  accepted.push(o);event(s,'order-submitted',{order:o});
+  if(o.side==='bid'){bought.set(o.owner,(bought.get(o.owner)??0)+1);bought.set(`${o.owner}:${o.item}`,(bought.get(`${o.owner}:${o.item}`)??0)+1);}accepted.push(o);event(s,'order-submitted',{order:o});
  } return accepted;
 }
 export function clear(s       , orders         ) {
@@ -132,7 +132,7 @@ export function clear(s       , orders         ) {
   const market=s.markets[item.id];
   // Lexicographic scan of ranked bids then ranked asks. Self-pairs are skipped, not removed.
   while(bids.length&&asks.length){let pair                      =null;
-   for(let b=0;b<bids.length&&!pair;b++)for(let a=0;a<asks.length;a++){if(bids[b].price<asks[a].price)break;if(bids[b].owner!==asks[a].owner){pair=[b,a];break;}}
+   for(let b=0;b<bids.length&&!pair;b++)for(let a=0;a<asks.length;a++){if(bids[b].price<asks[a].price)break;if(bids[b].owner!==asks[a].owner&&(!bids[b].counterparty||bids[b].counterparty===asks[a].owner)&&(!asks[a].counterparty||asks[a].counterparty===bids[b].owner)){pair=[b,a];break;}}
    if(!pair)break;const [bid]=bids.splice(pair[0],1),[ask]=asks.splice(pair[1],1);const price=Math.floor((bid.price+ask.price)/2);const buyerFee=fee(price,s.buyerFeeBps),sellerFee=fee(price,s.sellerFeeBps);
    const buyer=s.agents.find(a=>a.id===bid.owner) ;const seller=s.agents.find(a=>a.id===ask.owner);
    buyer.cash-=price+buyerFee;
@@ -164,7 +164,7 @@ export function assertAccounting(s       ) {
   if(m.stock<0||!Number.isSafeInteger(m.stock)||owned+m.stock!==s.manifest.config.initialStock+m.manufactured)throw new Error(`Copy conservation failed: ${i.id}`);
  }
 }
-export function step(s       )        {
+export function prepareRound(s       )        {
  if(s.round>=s.manifest.config.rounds)return s;
  s.round++;event(s,'round-start',{});const c=s.manifest.config;
  if(c.league&&s.round>1&&(s.round-1)%c.league.waveEvery===0&&(s.round-1)/c.league.waveEvery<c.league.waves)arrive(s,(s.round-1)/c.league.waveEvery);
@@ -175,16 +175,21 @@ export function step(s       )        {
  for(const x of s.manifest.interventions.filter(x=>x.round===s.round))apply(s,x);
  if(s.round%c.productionEvery===0)for(const i of c.items){const m=s.markets[i.id];if(!m.paused&&m.stock<c.maxStock){m.stock++;m.manufactured++;event(s,'item-issued',{item:i.id,count:1,source:'production'});}}
  for(const a of s.agents.filter(isFighter))if(c.league?activeFighter(s,a)&&s.round-(a.arrived??0)<=c.incomeRounds:s.round<=c.incomeRounds){a.cash+=c.income;s.externalCash+=c.income;event(s,'income-issued',{agent:a.id,gold:c.income});}
- const rng=random((s.manifest.seed^Math.imul(s.round,0x9e3779b9))>>>0);const ids=[...s.agents.map(a=>a.id),'shop'];for(let j=ids.length-1;j>0;j--){const k=Math.floor(rng()*(j+1));[ids[j],ids[k]]=[ids[k],ids[j]];}const priorities=new Map(ids.map((id,n)=>[id,n]));
- const proposals=s.agents.flatMap(a=>decide(s,a,priorities.get(a.id) ));
+ return s;
+}
+export function roundPriorities(s      ){const rng=random((s.manifest.seed^Math.imul(s.round,0x9e3779b9))>>>0);const ids=[...s.agents.map(a=>a.id),'shop'];for(let j=ids.length-1;j>0;j--){const k=Math.floor(rng()*(j+1));[ids[j],ids[k]]=[ids[k],ids[j]];}return new Map(ids.map((id,n)=>[id,n]));}
+export function settleRound(s      , supplied         )       {
+ const c=s.manifest.config,priorities=roundPriorities(s);
+ const proposals=supplied?[]:s.agents.flatMap(a=>decide(s,a,priorities.get(a.id) ));
  for(const i of c.items)if(s.markets[i.id].stock)proposals.push({id:`${s.round}:shop:${i.id}`,owner:'shop',item:i.id,side:'ask',price:primaryAsk(s,i),priority:priorities.get('shop') ,reason:reason('primary-supply','I offer one manufactured copy at the reference price plus the stock scarcity premium.',{stock:s.markets[i.id].stock,reference:i.reference,ask:primaryAsk(s,i)})});
- s.orders=validateOrders(s,proposals);const before=s.trades.length;clear(s,s.orders);const trades=s.trades.slice(before);
+ s.orders=validateOrders(s,supplied??proposals);const before=s.trades.length;clear(s,s.orders);const trades=s.trades.slice(before);
  if(c.story)for(const a of s.agents){if(s.orders.some(o=>o.owner===a.id&&o.side==='bid')&&!trades.some(t=>t.buyer===a.id))a.memory .missedBids++;}
  for(const i of c.items){const fills=trades.filter(t=>t.item===i.id);const m=s.markets[i.id];m.history.push({round:s.round,price:fills.length?fills.reduce((n,t)=>n+t.price,0)/fills.length:null,volume:fills.length,stock:m.stock,multiplier:m.multiplier});}
  assertAccounting(s);const fighters=s.agents.filter(isFighter),traders=s.agents.filter(a=>!isFighter(a));const count=traders.reduce((n,a)=>n+holdings(a),0);
  const metric={round:s.round,volume:trades.length,resale:trades.filter(t=>t.seller!=='shop').length,fighterPurchases:trades.filter(t=>isFighter(s.agents.find(a=>a.id===t.buyer) )).length,cash:s.agents.reduce((n,a)=>n+a.cash,0),shop:s.shop,fees:s.fees,externalCash:s.externalCash,completion:fighters.length?fighters.reduce((n,a)=>n+a.equipped.length,0)/(fighters.length*c.slots):0,satisfaction:fighters.length?fighters.reduce((n,a)=>n+satisfaction(s,a),0)/fighters.length:0,concentration:count?Math.max(0,...traders.map(a=>holdings(a)))/count:0,realizedProfit:traders.reduce((n,a)=>n+a.profit,0),markedInventory:traders.reduce((n,a)=>n+c.items.reduce((n,i)=>n+a.inventory[i.id].length*s.markets[i.id].last,0),0),averageWait:fighters.length?fighters.reduce((n,a)=>n+s.round-a.lastPurchase,0)/fighters.length:0};
  s.metrics.push(metric);event(s,'round-completed',{metrics:metric});return s;
 }
+export function step(s      )       {if(s.round>=s.manifest.config.rounds)return s;prepareRound(s);return settleRound(s);}
 export function run(manifest          , rounds=manifest.config.rounds) {const s=initialize(manifest);while(s.round<Math.min(rounds,manifest.config.rounds))step(s);return s;}
 export function digest(s       ) { // FNV-1a integrity checksum, not a cryptographic signature.
  // V2's larger stat catalog exposes runtime-specific last-bit logarithm differences.

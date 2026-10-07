@@ -1,0 +1,1 @@
+if(new URLSearchParams(location.search).has('legacy')){await import('./main.js');const link=document.createElement('a');link.href='./';link.textContent='← Ten-day bazaar / Run a shop';link.className='bazaar-return';document.body.prepend(link);}else await import('./shop-ui.js');

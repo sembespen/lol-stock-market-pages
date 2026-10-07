@@ -18,6 +18,7 @@ export function receipts(s      ,round=s.round){
 }
 export function editionRounds(s      )         {
  const rounds=new Set        ([0]);for(let r=25;r<=s.round;r+=25)rounds.add(r);
+ if(s.manifest.config.bazaar)for(const m of s.metrics)rounds.add(m.round);
  if(s.round===s.manifest.config.rounds)rounds.add(s.round);
  for(const e of s.events)if(e.type==='champions-arrived'||e.type==='intervention-applied'&&!e.data.expired)rounds.add(e.round);
  const resale=s.trades.find(t=>t.seller!=='shop'),splurge=s.trades.find(t=>t.price>=s.manifest.config.items.find(i=>i.id===t.item) .reference*2);
@@ -35,9 +36,10 @@ export function editionAt(s      ,round       )         {
  const recent=r.rows.filter(x=>x.trade.round>previous);
  if(round===0){
   const count=c.valueFighters+c.fixedFighters,cast=c.story?.traders;
-  articles.push({id:'opening',beat:'OPENING BELL',title:'Local economy entrusted to people with swords',body:`${count} champion shoppers and ${c.valueTraders+c.momentumTraders} traders enter with ${gold(s.initialCash)} gold. Equipment is useful. Resale is possible. Financial restraint is entirely optional. The Ledger will return every 25 rounds, with extra editions when the receipts warrant it.`,evidence:`Round 0 · ${count} shoppers · ${c.valueTraders+c.momentumTraders} traders · ${gold(s.initialCash)} initial gold`});
+  articles.push({id:'opening',beat:'OPENING BELL',title:'Local economy entrusted to people with swords',body:`${count} champion shoppers and ${c.valueTraders+c.momentumTraders} traders enter with ${gold(s.initialCash)} gold. Equipment is useful. Resale is possible. Financial restraint is entirely optional. ${c.bazaar?'The Ledger returns after each market day. Eight recurring customers have finite builds; sales are not guaranteed.':'The Ledger will return every 25 rounds, with extra editions when the receipts warrant it.'}`,evidence:`Round 0 · ${count} shoppers · ${c.valueTraders+c.momentumTraders} traders · ${gold(s.initialCash)} initial gold`});
   if(cast?.length)articles.push({id:'cast',beat:'MEET THE MERCHANTS',title:'A bagholder, a goblin and a baron walk into a shop',body:cast.slice(0,4).map(p=>p.label+': '+p.blurb).join(' ')+' These are strategies, not promises. The auction will have the final word.',evidence:'Configured trader personalities · inventory and cash caps apply'});
  }else{
+  if(c.bazaar){const consequence=s.events.filter(e=>e.round===round&&e.type==='bazaar-consequence'&&/counteroffer|walked away|trust|without a sale|alternative/.test(String(e.data.text))).at(-1);if(consequence)articles.push({id:`counter-${round}`,beat:'AT THE COUNTER',title:'The counter has consequences. Merchants request a quieter counter.',body:String(consequence.data.text),evidence:`Recorded bazaar consequence · day ${round}`});}
   const publicEvent=s.events.find(e=>e.round===round&&(e.type==='champions-arrived'||e.type==='intervention-applied'&&!e.data.expired));
   if(publicEvent){
    if(publicEvent.type==='champions-arrived')articles.push({id:`wave-${round}`,beat:'FRESH WALLETS',title:'New shopping wave arrives; merchants practice looking innocent',body:`Wave ${publicEvent.data.wave} brings ${publicEvent.data.count} champion buyers and ${gold(publicEvent.data.gold          )} gold in recorded starting cash. Prior shoppers keep their equipment and remaining gold, but their shopping session is over. Traders stay at their stalls.`,evidence:`R${round} · champions-arrived event · ${gold(publicEvent.data.gold          )} gold issued`});

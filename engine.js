@@ -1,4 +1,6 @@
 import { ENGINE_VERSION } from './config.js';
+import { decideCharacter } from './characters.js';
+import { personalityOf } from './personalities.js';
                                                                                                              
 export const fee = (price        , bps        ) => Math.floor(price * bps / 10000);
 export const holdings = (a       ) => Object.values(a.inventory).reduce((n,l)=>n+l.length,0);
@@ -25,6 +27,7 @@ function arrive(s      ,wave       ){
   for(let n=0;n<count;n++){
    const archetype=index===0&&c.league?.spotlight?c.archetypes.findIndex(a=>a.champion===c.league .spotlight):(wave*(c.valueFighters+c.fixedFighters)+index)%c.archetypes.length;index++;
    const a      ={id:`wave-${wave}-${strategy}-${n+1}`,name:`${c.archetypes[archetype].name} · W${wave+1}`,strategy,archetype,cash:c.fighterCash,equipped:[],inventory:Object.fromEntries(c.items.map(i=>[i.id,[]])),profit:0,lastPurchase:s.round,decision:[],arrived:s.round,wave};
+   if(c.story)a.memory={purchases:0,overpaid:0,missedBids:0,lastPaidBps:0};
    s.agents.push(a);s.externalCash+=a.cash;
   }
  }
@@ -36,11 +39,14 @@ export function initialize(manifest          )        {
   for(let n=0;n<count;n++){const index=agents.filter(isFighter).length;agents.push({id:`${strategy}-${n+1}`,name:`${strategy.includes('fighter')?c.archetypes[index%c.archetypes.length].name:strategy==='value-trader'?'Value':'Momentum'} ${n+1}`,strategy,archetype:index%c.archetypes.length,cash,equipped:[],inventory:Object.fromEntries(c.items.map(i=>[i.id,[]])),profit:0,lastPurchase:0,decision:[]});}
  }
  if(c.league)for(const a of agents){if(isFighter(a)){if(a.id==='value-fighter-1'&&c.league.spotlight)a.archetype=c.archetypes.findIndex(x=>x.champion===c.league .spotlight);a.name=`${c.archetypes[a.archetype].name} · W1`;a.arrived=0;a.wave=0;}else a.name=c.league.corner&&a.id==='value-trader-1'?'The Corner Attempt':a.strategy==='value-trader'?`Dealer ${a.id.split('-').at(-1)}`:`Trend Chaser ${a.id.split('-').at(-1)}`;}
- return {manifest:m,round:0,agents,markets:Object.fromEntries(c.items.map(i=>[i.id,{stock:c.initialStock,manufactured:0,last:i.reference,lastRound:null,multiplier:1,paused:false,bestBid:null,bestAsk:null,history:[]}])),shop:0,fees:0,initialCash:agents.reduce((n,a)=>n+a.cash,0),externalCash:0,buyerFeeBps:c.buyerFeeBps,sellerFeeBps:c.sellerFeeBps,trades:[],events:[],metrics:[],orders:[]};
+ const s      ={manifest:m,round:0,agents,markets:Object.fromEntries(c.items.map(i=>[i.id,{stock:c.initialStock,manufactured:0,last:i.reference,lastRound:null,multiplier:1,paused:false,bestBid:null,bestAsk:null,history:[]}])),shop:0,fees:0,initialCash:agents.reduce((n,a)=>n+a.cash,0),externalCash:0,buyerFeeBps:c.buyerFeeBps,sellerFeeBps:c.sellerFeeBps,trades:[],events:[],metrics:[],orders:[]};
+ if(c.story)for(const a of agents){a.memory={purchases:0,overpaid:0,missedBids:0,lastPaidBps:0};if(!isFighter(a))a.name=personalityOf(s,a) .label;}
+ return s;
 }
 const reason = (rule        ,text        ,inputs                  ={})         => ({rule,text,inputs});
 export function decide(s       , a       , priority        )          {
  const c=s.manifest.config; const orders         =[]; a.decision=[];
+ if(c.story)return decideCharacter(s,a,priority,{satisfaction,activeFighter,primaryAsk,affordable,fee,holdings,isFighter});
  const submit=(side             ,i      ,p        ,r        )=>{p=Math.max(1,Math.min(c.priceCap*i.reference,Math.floor(p)));const o       ={id:`${s.round}:${a.id}:${side}`,owner:a.id,item:i.id,side,price:p,priority,reason:r};orders.push(o);a.decision.push(r);};
  const canBuy=(i      )=>holdings(a)<c.inventoryCap&&a.inventory[i.id].length<c.perItemCap;
  const offer=(i      )=>s.markets[i.id].bestAsk??(s.markets[i.id].stock?primaryAsk(s,i):i.reference);
@@ -133,6 +139,7 @@ export function clear(s       , orders         ) {
    if(seller){const lot=seller.inventory[item.id].shift() ;seller.cash+=price-sellerFee;seller.profit+=price-sellerFee-lot.cost;}else{market.stock--;s.shop+=price-sellerFee;}
    s.fees+=buyerFee+sellerFee;
    const t       ={id:`trade-${s.trades.length+1}`,round:s.round,item:item.id,buyer:bid.owner,seller:ask.owner,price,buyerFee,sellerFee,bid:bid.price,ask:ask.price,buyerReason:bid.reason,sellerReason:ask.reason};s.trades.push(t);event(s,'trade-executed',{trade:t});
+   if(buyer.memory){buyer.memory.purchases++;buyer.memory.lastPaidBps=Math.floor(price*10000/item.reference);if(price*100>=item.reference*150)buyer.memory.overpaid++;}
    if(isFighter(buyer)){buyer.equipped.push(item.id);buyer.lastPurchase=s.round;event(s,'item-equipped',{agent:buyer.id,item:item.id});}else buyer.inventory[item.id].push({cost:price+buyerFee,round:s.round});
    market.last=price;market.lastRound=s.round;
   }
@@ -172,6 +179,7 @@ export function step(s       )        {
  const proposals=s.agents.flatMap(a=>decide(s,a,priorities.get(a.id) ));
  for(const i of c.items)if(s.markets[i.id].stock)proposals.push({id:`${s.round}:shop:${i.id}`,owner:'shop',item:i.id,side:'ask',price:primaryAsk(s,i),priority:priorities.get('shop') ,reason:reason('primary-supply','I offer one manufactured copy at the reference price plus the stock scarcity premium.',{stock:s.markets[i.id].stock,reference:i.reference,ask:primaryAsk(s,i)})});
  s.orders=validateOrders(s,proposals);const before=s.trades.length;clear(s,s.orders);const trades=s.trades.slice(before);
+ if(c.story)for(const a of s.agents){if(s.orders.some(o=>o.owner===a.id&&o.side==='bid')&&!trades.some(t=>t.buyer===a.id))a.memory .missedBids++;}
  for(const i of c.items){const fills=trades.filter(t=>t.item===i.id);const m=s.markets[i.id];m.history.push({round:s.round,price:fills.length?fills.reduce((n,t)=>n+t.price,0)/fills.length:null,volume:fills.length,stock:m.stock,multiplier:m.multiplier});}
  assertAccounting(s);const fighters=s.agents.filter(isFighter),traders=s.agents.filter(a=>!isFighter(a));const count=traders.reduce((n,a)=>n+holdings(a),0);
  const metric={round:s.round,volume:trades.length,resale:trades.filter(t=>t.seller!=='shop').length,fighterPurchases:trades.filter(t=>isFighter(s.agents.find(a=>a.id===t.buyer) )).length,cash:s.agents.reduce((n,a)=>n+a.cash,0),shop:s.shop,fees:s.fees,externalCash:s.externalCash,completion:fighters.length?fighters.reduce((n,a)=>n+a.equipped.length,0)/(fighters.length*c.slots):0,satisfaction:fighters.length?fighters.reduce((n,a)=>n+satisfaction(s,a),0)/fighters.length:0,concentration:count?Math.max(0,...traders.map(a=>holdings(a)))/count:0,realizedProfit:traders.reduce((n,a)=>n+a.profit,0),markedInventory:traders.reduce((n,a)=>n+c.items.reduce((n,i)=>n+a.inventory[i.id].length*s.markets[i.id].last,0),0),averageWait:fighters.length?fighters.reduce((n,a)=>n+s.round-a.lastPurchase,0)/fighters.length:0};

@@ -1,5 +1,6 @@
 import { leagueData } from './league-data.js';
 import { defaultConfig } from './config.js';
+import { championPersonalities, hypePersonality, practicalPersonality, traderPersonalities } from './personalities.js';
                                                          
 
 export const leagueScenarios = [
@@ -8,6 +9,13 @@ export const leagueScenarios = [
  {id:'league-buff',name:'The crit-item craze'},
  {id:'league-shortage',name:'The boots shortage'},
  {id:'league-corner',name:'The corner attempt'},
+];
+export const storyScenarios = [
+ {id:'story',name:'The bazaar · personalities & gossip'},
+ {id:'story-players',name:'The bazaar · champions only'},
+ {id:'story-buff',name:'The bazaar · crit craze'},
+ {id:'story-shortage',name:'The bazaar · boot panic'},
+ {id:'story-corner',name:'The bazaar · corner king'},
 ];
 const clean = (text        ) => text.replace(/<br\s*\/?\s*>/gi,' · ').replace(/<[^>]+>/g,'').replaceAll('&nbsp;',' ').replaceAll('&amp;','&');
 const rawItems = Object.entries(leagueData.items).filter(([,i])=>i.maps['11']&&i.gold.purchasable&&i.gold.total>0&&i.inStore!==false);
@@ -52,4 +60,18 @@ export function createLeagueManifest(seed=42,scenario='league')         {
  if(scenario==='league-buff')m.interventions.push({id:'crit-craze',round:55,kind:'utility',items:c.items.filter(i=>i.tags?.includes('CriticalStrike')).map(i=>i.id),value:1.8,duration:45});
  if(scenario==='league-shortage')m.interventions.push({id:'boots-stop',round:35,kind:'pause',items:c.items.filter(i=>i.boots).map(i=>i.id),value:0},{id:'boots-resume',round:100,kind:'resume',items:c.items.filter(i=>i.boots).map(i=>i.id),value:0});
  return m;
+}
+export function createStoryManifest(seed=42,scenario='story')         {
+ const old=scenario==='story'?'league':scenario.replace('story-','league-');
+ const m=createLeagueManifest(seed,old),c=m.config;m.engineVersion='3.0.0';
+ // Put the researched ensemble in the first shopping wave; retain all identities.
+ const cast=['Jinx','Draven','Ornn','Ahri','Garen','Teemo','Veigar','Yasuo','Lux','Thresh','Ashe','Darius','MissFortune','Leona'];
+ c.archetypes.sort((a,b)=>{const ai=cast.indexOf(a.champion ),bi=cast.indexOf(b.champion );return (ai<0?999:ai)-(bi<0?999:bi)||a.champion .localeCompare(b.champion );});
+ for(const a of c.archetypes)a.personality=structuredClone(championPersonalities[a.champion ]??practicalPersonality);
+ const alternates=['Beatrice Bags','Nix the Bargain Goblin','Mortimer Fairweather','Lady Bootstraps'];
+ const traders=Array.from({length:c.valueTraders},(_,n)=>({...structuredClone(traderPersonalities[n%4]),id:`${traderPersonalities[n%4].id}-${n+1}`,label:n<4?traderPersonalities[n].label:alternates[(n-4)%4]+(n>=8?' '+(n+1):'')}));
+ if(c.league .corner&&traders.length)traders[0]={...structuredClone(traderPersonalities[3]),id:'corner-special',label:'The Corner King'};
+ const hypeNames=['Pip Moonshot','Fifi FOMO','Sir Candlewick','Bex Buyhigh'];
+ for(let n=0;n<c.momentumTraders;n++)traders.push({...structuredClone(hypePersonality),id:`hype-${n+1}`,label:hypeNames[n%4]+(n>=4?' '+(n+1):'')});
+ c.story={version:1,traders};return m;
 }
